@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from src.models.database import engine, fetch_one
-from src.models.tables import audit, datasets, deliveries, runs, schedules
+from src.models.tables import audit, datasets, deliveries, merge_ledgers, runs, schedules
 
 
 def list_rows(table, fields=None, limit=100):
@@ -26,6 +26,12 @@ def require_row(table, key, label):
 
 def jobs():
     return list_rows(runs, [field for field in runs.c if field.name != 'result'])
+
+
+def quarantine_for(key):
+    with engine.connect() as connection:
+        meta = connection.scalar(select(merge_ledgers.c.meta).where(merge_ledgers.c.dataset_id == key))
+    return (meta or {}).get('quarantined', {})
 
 
 def delivery_status():

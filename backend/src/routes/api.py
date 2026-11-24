@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from src.config.settings import ARTIFACTS
 from src.constants.enums import Role
-from src.controllers.query import delivery_status, jobs, recent_activity, require_row, revisions
+from src.controllers.query import delivery_status, jobs, quarantine_for, recent_activity, require_row, revisions
 from src.models.tables import datasets, runs
-from src.schemas.requests import Delivery, Import, Login, Review, Run
+from src.schemas.requests import Delivery, Import, Login, Merge, Review, Run
 from src.services.data import PROFILE, csv_records, save_revision
 from src.services.domain import sample_rows
-from src.services.workflow import add_run, cancel_schedule, review_run, schedule_report
+from src.services.workflow import add_run, cancel_schedule, merge_correction, review_run, schedule_report
 from src.utils.exports import write_csv
 from src.utils.security import allowed, authenticate, signed_in
 
@@ -52,7 +52,7 @@ def list_datasets(account=Depends(signed_in)):
 def get_dataset(key: int, account=Depends(signed_in)):
     dataset = require_row(datasets, key, '数据版本')
     records = dataset.pop('records')
-    return {**dataset, 'count': len(records), 'records': records[:100]}
+    return {**dataset, 'count': len(records), 'records': records[:100], 'quarantined': quarantine_for(key)}
 
 
 @router.post('/datasets', status_code=201)
@@ -60,6 +60,11 @@ def import_data(body: Import, account=Depends(analyst)):
     rows = csv_records(body.csv)
     key, created = save_revision(body.name, rows, account['username'])
     return {'id': key, 'created': created, 'rows': len(rows)}
+
+
+@router.post('/datasets/merge', status_code=201)
+def merge_data(body: Merge, account=Depends(analyst)):
+    return merge_correction(body, account['username'])
 
 
 @router.get('/runs')

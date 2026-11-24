@@ -1,12 +1,71 @@
+import hashlib
+import json
 import time
 
 from fastapi import HTTPException
 from sqlalchemy import and_, insert, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from src.constants.enums import State
 from src.models.database import add_event, engine, fetch_one
-from src.models.tables import datasets, deliveries, runs, schedules
+from src.models.tables import datasets, deliveries, merge_ledgers, runs, schedules
 from src.services.data import parse_options
+from src.services.merge import business_content, correction_records, merge_records, revisioned_content
+
+
+def save_merged(connection, name, records, quarantined, owner, now):
+    payload = json.dumps({'records': records, 'quarantined': quarantined}, sort_keys=True,
+                         ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+    checksum = hashlib.sha256(payload.encode()).hexdigest()
+    existing = select(datasets.c.id).where(datasets.c.checksum == checksum)
+    found = connection.scalar(existing)
+    if found is not None:
+        return found, False
+    try:
+        with connection.begin_nested():
+            key = connection.execute(insert(datasets).values(name=name.strip(), owner=owner, records=records,
+                                                             checksum=checksum, created=now)).inserted_primary_key[0]
+            connection.execute(insert(merge_ledgers).values(dataset_id=key, meta={'quarantined': quarantined}))
+    except IntegrityError:
+        found = connection.scalar(existing)
+        if found is None:
+            raise
+        return found, False
+    return key, True
+
+
+def merge_correction(body, actor):
+    """把补传更正并入最新台账版本；有效记录变化时按上一分析参数排队重算。"""
+    incoming = correction_records(body.csv)
+    if not body.name.strip():
+        raise ValueError('数据名称不能为空。')
+    now = time.time()
+    with engine.begin() as connection:
+        base = connection.execute(select(datasets).order_by(datasets.c.id.desc()).limit(1)).mappings().one_or_none()
+        if base is None:
+            raise HTTPException(409, '请先导入台账数据，再合并更正。')
+        ledger = connection.execute(select(merge_ledgers.c.meta)
+                                    .where(merge_ledgers.c.dataset_id == base['id'])).scalar_one_or_none() or {}
+        previous = ledger.get('quarantined') or {}
+        merged, quarantined, events = merge_records(base['records'], previous, incoming, now)
+        changed = business_content(base['records']) != business_content(merged)
+        versioned = changed or quarantined != previous or revisioned_content(base['records']) != revisioned_content(merged)
+        if not versioned:
+            add_event(connection, actor, 'merge', base['id'], now)
+            return {'id': base['id'], 'created': False, 'rows': len(merged), 'changed': False,
+                    'run_id': None, 'events': events, 'quarantined': quarantined}
+        key, created = save_merged(connection, body.name, merged, quarantined, actor, now)
+        run_id = None
+        if changed:
+            last = connection.execute(select(runs.c.options).where(runs.c.dataset_id == base['id'])
+                                      .order_by(runs.c.id.desc()).limit(1)).mappings().one_or_none()
+            if last is not None:
+                run_id = connection.execute(insert(runs).values(dataset_id=key, options=last['options'],
+                                            state=State.queued.value, owner=actor, created=now)).inserted_primary_key[0]
+                add_event(connection, actor, 'queue', run_id, now)
+        add_event(connection, actor, 'merge', key, now)
+    return {'id': key, 'created': created, 'rows': len(merged), 'changed': changed,
+            'run_id': run_id, 'events': events, 'quarantined': quarantined}
 
 
 def add_run(body, actor):

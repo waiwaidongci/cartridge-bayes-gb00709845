@@ -7,6 +7,7 @@ import {bindForm} from '../hooks/forms.js';
 import {state} from '../stores/session.js';
 import {fieldInput} from '../types/fields.js';
 import {esc,formData,time} from '../utils/html.js';
+import {freshness,pickCurrent} from '../utils/runs.js';
 
 export async function analysis() {
   const profile = state.profile;
@@ -17,7 +18,7 @@ export async function analysis() {
 
 export async function currentRun() {
   const runs = await api('/runs');
-  const chosen = runs.find(item => item.id === state.runId) || runs[0];
+  const chosen = runs.find(item => item.id === state.runId) || pickCurrent(runs) || runs[0];
   return {runs,run:chosen ? await api(`/runs/${chosen.id}`) : null};
 }
 
@@ -28,8 +29,15 @@ export function chooseRun(runs, selected) {
 export async function results() {
   const {runs,run} = await currentRun();
   if (!run) return empty('提交一条分析任务后可在这里查看结果。','#2','配置分析');
+  const explicit = state.runId != null && runs.some(item => item.id === state.runId);
+  let banner = '';
+  if (!explicit && run.result) {
+    const {pending,failed} = freshness(runs,run.id);
+    if (pending) banner = '<p class="notice" data-poll>新一批更正正在重算，完成后本页将一次性切换到新结果。</p>';
+    else if (failed) banner = `<p class="error" role="alert">最新一批重算失败：${esc(failed.error || '计算失败')}。本页保留当前有效版本，请核对数据后重新合并或提交。</p>`;
+  }
   const result = run.result ? report(run.result) : `<p ${run.error ? 'class="error"' : 'data-poll'}>${esc(run.error || states[run.state])}</p>`;
-  return `<section>${chooseRun(runs,run.id)}<p class="hint">数据版本 #${run.dataset_id} · 计算状态 ${states[run.state]}</p>${result}${run.result ? `<a class="button" href="#4/${run.id}">进入业务复核</a>` : '<a href="#2">回到分析条件</a>'}</section>`;
+  return `<section>${chooseRun(runs,run.id)}<p class="hint">数据版本 #${run.dataset_id} · 计算状态 ${states[run.state]}</p>${banner}${result}${run.result ? `<a class="button" href="#4/${run.id}">进入业务复核</a>` : '<a href="#2">回到分析条件</a>'}</section>`;
 }
 
 export function bindAnalysis(root, section, refresh) {

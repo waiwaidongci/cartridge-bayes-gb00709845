@@ -7,6 +7,8 @@ datasets = Table('data_revisions', metadata, Column('id', Integer, primary_key=T
                  Column('name', String(180), nullable=False), Column('checksum', String(64), nullable=False, unique=True),
                  Column('records', JSON, nullable=False), Column('owner', String(40), nullable=False),
                  Column('created', Double, nullable=False))
+merge_ledgers = Table('merge_ledgers', metadata, Column('dataset_id', Integer, primary_key=True),
+                      Column('meta', JSON, nullable=False))
 runs = Table('analysis_runs', metadata, Column('id', Integer, primary_key=True),
              Column('dataset_id', Integer, nullable=False, index=True), Column('options', JSON, nullable=False),
              Column('state', String(16), nullable=False, index=True), Column('owner', String(40), nullable=False),
